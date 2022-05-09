@@ -15,8 +15,11 @@
 
 from os_brick.encryptors import cryptsetup
 from os_brick.privileged import rootwrap as priv_rootwrap
+from oslo_concurrency import lockutils
 from oslo_concurrency import processutils as putils
 from oslo_log import log as logging
+
+synchronized = lockutils.synchronized_with_prefix('os-brick-')
 
 LOG = logging.getLogger(__name__)
 
@@ -135,6 +138,7 @@ class LuksEncryptor(cryptsetup.CryptsetupEncryptor):
                       root_helper=self._root_helper)
         LOG.debug("%s mangled passphrase successfully replaced", self.dev_path)
 
+    @synchronized('connect_volume')
     def attach_volume(self, context, **kwargs):
         """Shadow the device and pass an unencrypted version to the instance.
 
@@ -180,6 +184,9 @@ class LuksEncryptor(cryptsetup.CryptsetupEncryptor):
 
     def _close_volume(self, **kwargs):
         """Closes the device (effectively removes the dm-crypt mapping)."""
+        device = self._get_backend_device()
+        if not device:
+            return
         LOG.debug("closing encrypted volume %s", self.dev_path)
         # NOTE(mdbooth): luksClose will return 4 (wrong device specified) if
         # the device doesn't exist. We assume here that the caller hasn't
@@ -190,3 +197,4 @@ class LuksEncryptor(cryptsetup.CryptsetupEncryptor):
                       run_as_root=True, check_exit_code=[0, 4],
                       root_helper=self._root_helper,
                       attempts=3)
+        self._restore_device_links(device)
