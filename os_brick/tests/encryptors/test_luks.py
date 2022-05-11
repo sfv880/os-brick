@@ -15,12 +15,14 @@
 
 from unittest import mock
 
+import ddt
 from oslo_concurrency import processutils as putils
 
 from os_brick.encryptors import luks
 from os_brick.tests.encryptors import test_cryptsetup
 
 
+@ddt.ddt
 class LuksEncryptorTestCase(test_cryptsetup.CryptsetupEncryptorTestCase):
     def _create(self):
         return luks.LuksEncryptor(root_helper=self.root_helper,
@@ -164,7 +166,7 @@ class LuksEncryptorTestCase(test_cryptsetup.CryptsetupEncryptorTestCase):
 
     @mock.patch('os_brick.executor.Executor._execute')
     def test__close_volume(self, mock_execute):
-        self.encryptor.detach_volume()
+        self.encryptor._close_volume()
 
         mock_execute.assert_has_calls([
             mock.call('cryptsetup', 'luksClose', self.dev_name,
@@ -172,15 +174,23 @@ class LuksEncryptorTestCase(test_cryptsetup.CryptsetupEncryptorTestCase):
                       attempts=3, run_as_root=True, check_exit_code=[0, 4]),
         ])
 
-    @mock.patch('os_brick.executor.Executor._execute')
-    def test_detach_volume(self, mock_execute):
+    @ddt.data(None, '/dev/sde')
+    @mock.patch.object(luks.LuksEncryptor, '_restore_device_links')
+    @mock.patch.object(luks.LuksEncryptor, '_close_volume')
+    @mock.patch.object(luks.LuksEncryptor, '_get_backend_device')
+    def test_detach_volume(self, device,
+                           mock_get_device,
+                           mock_close_volume,
+                           mock_restore_links):
+        mock_get_device.return_value = device
         self.encryptor.detach_volume()
-
-        mock_execute.assert_has_calls([
-            mock.call('cryptsetup', 'luksClose', self.dev_name,
-                      root_helper=self.root_helper,
-                      attempts=3, run_as_root=True, check_exit_code=[0, 4]),
-        ])
+        mock_get_device.assert_called_once()
+        if device:
+            mock_close_volume.assert_called_once()
+            mock_restore_links.assert_called_once_with(device)
+        else:
+            mock_close_volume.assert_not_called()
+            mock_restore_links.assert_not_called()
 
 
 class Luks2EncryptorTestCase(LuksEncryptorTestCase):

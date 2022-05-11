@@ -16,12 +16,15 @@
 import binascii
 import os
 
+from oslo_concurrency import lockutils
 from oslo_concurrency import processutils
 from oslo_log import log as logging
 from oslo_log import versionutils
 
 from os_brick.encryptors import base
 from os_brick import exception
+
+synchronized = lockutils.synchronized_with_prefix('os-brick-')
 
 LOG = logging.getLogger(__name__)
 
@@ -126,6 +129,7 @@ class CryptsetupEncryptor(base.VolumeEncryptor):
                       check_exit_code=True, run_as_root=True,
                       root_helper=self._root_helper)
 
+    @synchronized('connect_volume')
     def attach_volume(self, context, **kwargs):
         """Shadow the device and pass an unencrypted version to the instance.
 
@@ -166,6 +170,41 @@ class CryptsetupEncryptor(base.VolumeEncryptor):
                       run_as_root=True, check_exit_code=[0, 4],
                       root_helper=self._root_helper)
 
+    def _get_backend_device(self):
+        """Check status for the dm-crypt device and return backed device."""
+        stdout, stderr = self._execute('cryptsetup', 'status', self.dev_name,
+                                       run_as_root=True,
+                                       check_exit_code=[0, 4],
+                                       root_helper=self._root_helper)
+        if not stdout:
+            return None
+        lines = stdout.splitlines()
+        for line in lines:
+            if not line:
+                continue
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            name = fields[0]
+            if name == 'device:':
+                device = fields[1]
+                if device and os.path.exists(device):
+                    return device
+        return None
+
+    def _restore_device_links(self, device):
+        """Restoring original links for device."""
+        LOG.debug('restoring original links for device %s', device)
+        self._execute('udevadm', 'trigger', device,
+                      run_as_root=True,
+                      check_exit_code=False,
+                      root_helper=self._root_helper)
+
+    @synchronized('connect_volume')
     def detach_volume(self, **kwargs):
         """Removes the dm-crypt mapping for the device."""
+        device = self._get_backend_device()
+        if not device:
+            return
         self._close_volume(**kwargs)
+        self._restore_device_links(device)

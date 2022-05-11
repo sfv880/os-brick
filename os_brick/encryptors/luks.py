@@ -13,11 +13,14 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_concurrency import lockutils
 from oslo_concurrency import processutils as putils
 from oslo_log import log as logging
 
 from os_brick.encryptors import cryptsetup
 from os_brick.privileged import rootwrap as priv_rootwrap
+
+synchronized = lockutils.synchronized_with_prefix('os-brick-')
 
 LOG = logging.getLogger(__name__)
 
@@ -113,6 +116,7 @@ class LuksEncryptor(cryptsetup.CryptsetupEncryptor):
                       run_as_root=True, check_exit_code=True,
                       root_helper=self._root_helper)
 
+    @synchronized('connect_volume')
     def attach_volume(self, context, **kwargs):
         """Shadow the device and pass an unencrypted version to the instance.
 

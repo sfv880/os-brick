@@ -20,6 +20,7 @@ from unittest import mock
 
 from castellan.common.objects import symmetric_key as key
 from castellan.tests.unit.key_manager import fake
+import ddt
 
 from os_brick.encryptors import cryptsetup
 from os_brick import exception
@@ -32,6 +33,7 @@ def fake__get_key(context, passphrase):
     return symmetric_key
 
 
+@ddt.ddt
 class CryptsetupEncryptorTestCase(test_base.VolumeEncryptorTestCase):
 
     @mock.patch('os.path.exists', return_value=False)
@@ -82,7 +84,7 @@ class CryptsetupEncryptorTestCase(test_base.VolumeEncryptorTestCase):
 
     @mock.patch('os_brick.executor.Executor._execute')
     def test__close_volume(self, mock_execute):
-        self.encryptor.detach_volume()
+        self.encryptor._close_volume()
 
         mock_execute.assert_has_calls([
             mock.call('cryptsetup', 'remove', self.dev_name,
@@ -90,15 +92,62 @@ class CryptsetupEncryptorTestCase(test_base.VolumeEncryptorTestCase):
                       run_as_root=True, check_exit_code=[0, 4]),
         ])
 
+    @ddt.data([None, False],
+              [None, True],
+              ['\n\n\n', False],
+              ['mode:   read/write', False],
+              ['device: /dev/sde\ntype:   LUKS1\n', True],
+              ['device: /dev/sde\noffset: 4096 sectors\n', False])
+    @ddt.unpack
+    @mock.patch('os.path.exists')
     @mock.patch('os_brick.executor.Executor._execute')
-    def test_detach_volume(self, mock_execute):
-        self.encryptor.detach_volume()
+    def test__get_backend_device(self, mock_output, mock_found,
+                                 mock_execute, mock_exists):
+        mock_execute.return_value = (mock_output, None)
+        mock_exists.return_value = mock_found
+        device = self.encryptor._get_backend_device()
+        mock_execute.assert_has_calls([
+            mock.call('cryptsetup', 'status', self.dev_name,
+                      run_as_root=True, check_exit_code=[0, 4],
+                      root_helper=self.root_helper)
+        ])
+        if mock_output and mock_found:
+            self.assertEqual(device, '/dev/sde')
+        else:
+            self.assertIsNone(device)
+
+    @ddt.data('/dev/sdb')
+    @mock.patch('os_brick.executor.Executor._execute')
+    def test__restore_device_links(self, mock_device, mock_execute):
+        self.encryptor._restore_device_links(mock_device)
 
         mock_execute.assert_has_calls([
-            mock.call('cryptsetup', 'remove', self.dev_name,
-                      root_helper=self.root_helper,
-                      run_as_root=True, check_exit_code=[0, 4]),
+            mock.call('udevadm', 'trigger', mock_device,
+                      run_as_root=True,
+                      check_exit_code=False,
+                      root_helper=self.root_helper)
         ])
+
+    @ddt.data(None, '/dev/sde')
+    @mock.patch.object(cryptsetup.CryptsetupEncryptor,
+                       '_restore_device_links')
+    @mock.patch.object(cryptsetup.CryptsetupEncryptor,
+                       '_close_volume')
+    @mock.patch.object(cryptsetup.CryptsetupEncryptor,
+                       '_get_backend_device')
+    def test_detach_volume(self, device,
+                           mock_get_device,
+                           mock_close_volume,
+                           mock_restore_links):
+        mock_get_device.return_value = device
+        self.encryptor.detach_volume()
+        mock_get_device.assert_called_once()
+        if device:
+            mock_close_volume.assert_called_once()
+            mock_restore_links.assert_called_once_with(device)
+        else:
+            mock_close_volume.assert_not_called()
+            mock_restore_links.assert_not_called()
 
     def test_init_volume_encryption_not_supported(self):
         # Tests that creating a CryptsetupEncryptor fails if there is no
